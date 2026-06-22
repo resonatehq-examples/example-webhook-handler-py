@@ -24,7 +24,7 @@ Exactly-once webhook processing with automatic deduplication. Models a Stripe-st
 The `event_id` from Stripe's webhook payload becomes the Resonate promise ID:
 
 ```python
-resonate.begin_run(f"webhook/{event['event_id']}", process_payment, event, simulate_crash)
+r.run(f"webhook/{event['event_id']}", process_payment, event, simulate_crash)
 ```
 
 If Stripe retries the same `event_id`, Resonate finds the existing promise and returns it immediately — without re-executing. No database deduplication table required. No Redis lock. The durability guarantee comes for free.
@@ -33,8 +33,7 @@ If Stripe retries the same `event_id`, Resonate finds the existing promise and r
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
-
-The Python SDK runs in embedded local mode — no Resonate server required for this example.
+- A running Resonate server (`resonate dev`)
 
 ## Setup
 
@@ -45,6 +44,12 @@ uv sync
 ```
 
 ## Run It
+
+Start a Resonate server (in a separate terminal):
+
+```bash
+resonate dev
+```
 
 **Deduplication mode** — same webhook delivered twice, processed once:
 ```bash
@@ -112,21 +117,21 @@ Mode: CRASH (payment processor times out on first attempt, retries once)
 
 ## The Code
 
-The entire workflow is a small generator in [`workflow.py`](workflow.py):
+The entire workflow is a small async function in [`workflow.py`](workflow.py):
 
 ```python
-def process_payment(ctx, event, simulate_crash):
-    yield ctx.run(validate_event, event)
-    charge_id = yield ctx.run(charge_card, event, simulate_crash)
-    yield ctx.run(send_receipt, event, charge_id)
-    result = yield ctx.run(update_ledger, event, charge_id)
+async def process_payment(ctx, event, simulate_crash):
+    await ctx.run(validate_event, event)
+    charge_id = await ctx.run(charge_card, event, simulate_crash)
+    await ctx.run(send_receipt, event, charge_id)
+    result = await ctx.run(update_ledger, event, charge_id)
     return result
 ```
 
 The deduplication is in the entry point, one line:
 
 ```python
-resonate.begin_run(f"webhook/{event['event_id']}", process_payment, event, False)
+r.run(f"webhook/{event['event_id']}", process_payment, event, False)
 ```
 
 That's it. If `event_id` already exists in the promise store, Resonate returns the cached result. If not, it creates a new execution.
@@ -143,21 +148,23 @@ example-webhook-handler-py/
 
 ## Dedup by promise ID
 
-The deduplication mechanism is the promise ID itself. When the webhook handler calls `resonate.begin_run(event_id, process_payment, ...)`, the `event_id` becomes the durable promise ID. A second invocation with the same `event_id` returns the cached result of the first — no re-execution, no double-charge, no separate idempotency table to maintain.
+The deduplication mechanism is the promise ID itself. When the webhook handler calls `r.run(event_id, process_payment, ...)`, the `event_id` becomes the durable promise ID. A second invocation with the same `event_id` returns the cached result of the first — no re-execution, no double-charge, no separate idempotency table to maintain.
 
 The same mechanism that provides durability provides idempotency. That's it.
 
 ## Running against a Resonate Server
 
-This example runs in embedded local mode by default. If you want to point it at a standalone server:
+By default, `main.py` connects to a Resonate server at `http://localhost:8001`. Start one with:
 
 ```bash
-resonate serve --aio-store-sqlite-path :memory:
+resonate dev
 ```
 
-> The Python SDK (v0.6.x) speaks the legacy server protocol. Use `resonate serve` (legacy server), not `resonate dev`.
+To point at a different server, set the `RESONATE_URL` environment variable:
 
-Then swap `Resonate.local()` for `Resonate.remote()` in `main.py` and start the worker normally.
+```bash
+RESONATE_URL=http://my-server:8001 uv run python main.py
+```
 
 ## Learn More
 
