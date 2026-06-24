@@ -24,7 +24,7 @@ Exactly-once webhook processing with automatic deduplication. Models a Stripe-st
 The `event_id` from Stripe's webhook payload becomes the Resonate promise ID:
 
 ```python
-r.run(f"webhook/{event['event_id']}", process_payment, event, simulate_crash)
+resonate.run(f"webhook/{event['event_id']}", process_payment, event, simulate_crash)
 ```
 
 If Stripe retries the same `event_id`, Resonate finds the existing promise and returns it immediately — without re-executing. No database deduplication table required. No Redis lock. The durability guarantee comes for free.
@@ -128,10 +128,24 @@ async def process_payment(ctx, event, simulate_crash):
     return result
 ```
 
-The deduplication is in the entry point, one line:
+Resonate is constructed inside a FastAPI lifespan so it starts within the running event loop:
 
 ```python
-r.run(f"webhook/{event['event_id']}", process_payment, event, False)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global resonate
+    resonate = Resonate(url=RESONATE_URL)
+    resonate.register(process_payment)
+    yield
+    await resonate.stop()
+
+app = FastAPI(lifespan=lifespan)
+```
+
+The deduplication is in the webhook handler, one line:
+
+```python
+resonate.run(f"webhook/{event['event_id']}", process_payment, event, False)
 ```
 
 That's it. If `event_id` already exists in the promise store, Resonate returns the cached result. If not, it creates a new execution.
@@ -148,7 +162,7 @@ example-webhook-handler-py/
 
 ## Dedup by promise ID
 
-The deduplication mechanism is the promise ID itself. When the webhook handler calls `r.run(event_id, process_payment, ...)`, the `event_id` becomes the durable promise ID. A second invocation with the same `event_id` returns the cached result of the first — no re-execution, no double-charge, no separate idempotency table to maintain.
+The deduplication mechanism is the promise ID itself. When the webhook handler calls `resonate.run(event_id, process_payment, ...)`, the `event_id` becomes the durable promise ID. A second invocation with the same `event_id` returns the cached result of the first — no re-execution, no double-charge, no separate idempotency table to maintain.
 
 The same mechanism that provides durability provides idempotency. That's it.
 

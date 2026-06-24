@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import urllib.request
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -33,18 +34,30 @@ from workflow import WebhookEvent, process_payment
 # ---------------------------------------------------------------------------
 
 _RESONATE_URL = os.environ.get("RESONATE_URL", "http://localhost:8001")
-resonate = Resonate(url=_RESONATE_URL)
-resonate.register(process_payment)
 
 # Whether the demo should ask the workflow to simulate a payment-processor
 # crash on the first attempt. Set from CLI args at startup.
 SIMULATE_CRASH = "--crash" in sys.argv
 
+# Module-level reference; set inside the lifespan so it runs within the
+# running event loop (Resonate.__init__ spawns asyncio tasks).
+resonate: Resonate | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global resonate
+    resonate = Resonate(url=_RESONATE_URL)
+    resonate.register(process_payment)
+    yield
+    await resonate.stop()
+
+
 # ---------------------------------------------------------------------------
 # FastAPI webhook server
 # ---------------------------------------------------------------------------
 
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 
 @app.post("/webhook")
@@ -184,7 +197,6 @@ def run_demo() -> None:
         )
 
     # Stop the server thread once the demo is finished.
-    import os
     os._exit(0)
 
 

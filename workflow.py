@@ -16,6 +16,7 @@ from the charge_card checkpoint — no second charge.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import TYPE_CHECKING, TypedDict
@@ -59,7 +60,7 @@ _charge_attempts: dict[str, int] = {}
 
 async def validate_event(_ctx: Context, event: WebhookEvent) -> None:
     print(f"  [validate]  Checking signature for {event['event_id']}...")
-    time.sleep(0.05)
+    await asyncio.sleep(0.05)
     # In production: verify Stripe-Signature HMAC against your webhook secret
     amount = event["amount"] / 100
     print(
@@ -83,7 +84,7 @@ async def charge_card(
         f"  [charge]    Authorizing ${amount:.2f} for "
         f"{event['customer_id']} (attempt {attempt})..."
     )
-    time.sleep(0.2)
+    await asyncio.sleep(0.2)
 
     if simulate_crash and attempt == 1:
         # Simulate payment processor timeout on first attempt.
@@ -106,7 +107,7 @@ async def send_receipt(
         f"  [receipt]   Emailing receipt to {event['customer_id']} "
         f"for {charge_id}..."
     )
-    time.sleep(0.08)
+    await asyncio.sleep(0.08)
     print("  [receipt]   Receipt sent")
 
 
@@ -118,7 +119,7 @@ async def update_ledger(
     _ctx: Context, event: WebhookEvent, charge_id: str
 ) -> PaymentResult:
     print(f"  [ledger]    Recording {charge_id} in accounting ledger...")
-    time.sleep(0.06)
+    await asyncio.sleep(0.06)
     result: PaymentResult = {
         "event_id": event["event_id"],
         "charge_id": charge_id,
