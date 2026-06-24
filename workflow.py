@@ -16,11 +16,13 @@ from the charge_card checkpoint — no second charge.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
-from typing import Any, Generator, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
-from resonate import Context
+if TYPE_CHECKING:
+    from resonate.context import Context
 
 
 # ---------------------------------------------------------------------------
@@ -56,9 +58,9 @@ _charge_attempts: dict[str, int] = {}
 # Step 1: Validate event structure and signature
 # ---------------------------------------------------------------------------
 
-def validate_event(_ctx: Context, event: WebhookEvent) -> None:
+async def validate_event(_ctx: Context, event: WebhookEvent) -> None:
     print(f"  [validate]  Checking signature for {event['event_id']}...")
-    time.sleep(0.05)
+    await asyncio.sleep(0.05)
     # In production: verify Stripe-Signature HMAC against your webhook secret
     amount = event["amount"] / 100
     print(
@@ -71,7 +73,7 @@ def validate_event(_ctx: Context, event: WebhookEvent) -> None:
 # Step 2: Charge the card (idempotent — checkpoint prevents double charge)
 # ---------------------------------------------------------------------------
 
-def charge_card(
+async def charge_card(
     _ctx: Context, event: WebhookEvent, simulate_crash: bool
 ) -> str:
     attempt = _charge_attempts.get(event["event_id"], 0) + 1
@@ -82,7 +84,7 @@ def charge_card(
         f"  [charge]    Authorizing ${amount:.2f} for "
         f"{event['customer_id']} (attempt {attempt})..."
     )
-    time.sleep(0.2)
+    await asyncio.sleep(0.2)
 
     if simulate_crash and attempt == 1:
         # Simulate payment processor timeout on first attempt.
@@ -98,14 +100,14 @@ def charge_card(
 # Step 3: Send receipt to customer
 # ---------------------------------------------------------------------------
 
-def send_receipt(
+async def send_receipt(
     _ctx: Context, event: WebhookEvent, charge_id: str
 ) -> None:
     print(
         f"  [receipt]   Emailing receipt to {event['customer_id']} "
         f"for {charge_id}..."
     )
-    time.sleep(0.08)
+    await asyncio.sleep(0.08)
     print("  [receipt]   Receipt sent")
 
 
@@ -113,11 +115,11 @@ def send_receipt(
 # Step 4: Record transaction in accounting ledger
 # ---------------------------------------------------------------------------
 
-def update_ledger(
+async def update_ledger(
     _ctx: Context, event: WebhookEvent, charge_id: str
 ) -> PaymentResult:
     print(f"  [ledger]    Recording {charge_id} in accounting ledger...")
-    time.sleep(0.06)
+    await asyncio.sleep(0.06)
     result: PaymentResult = {
         "event_id": event["event_id"],
         "charge_id": charge_id,
@@ -133,22 +135,22 @@ def update_ledger(
 # Workflow orchestrator
 # ---------------------------------------------------------------------------
 
-def process_payment(
+async def process_payment(
     ctx: Context, event: WebhookEvent, simulate_crash: bool
-) -> Generator[Any, Any, PaymentResult]:
+) -> PaymentResult:
     # Step 1: Validate signature and event structure
-    yield ctx.run(validate_event, event)
+    await ctx.run(validate_event, event)
 
     # Step 2: Charge the card — checkpointed.
     # If this crashes and retries, we call the payment processor exactly once.
     # If a duplicate webhook arrives with the same event_id, this step is
     # returned from cache — the processor is never called again.
-    charge_id = yield ctx.run(charge_card, event, simulate_crash)
+    charge_id = await ctx.run(charge_card, event, simulate_crash)
 
     # Step 3: Send receipt
-    yield ctx.run(send_receipt, event, charge_id)
+    await ctx.run(send_receipt, event, charge_id)
 
     # Step 4: Update accounting ledger
-    result = yield ctx.run(update_ledger, event, charge_id)
+    result = await ctx.run(update_ledger, event, charge_id)
 
     return result

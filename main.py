@@ -15,34 +15,49 @@ and prints the result.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
 import urllib.request
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from resonate import Resonate
+from resonate.resonate import Resonate
 import uvicorn
 
 from workflow import WebhookEvent, process_payment
 
 # ---------------------------------------------------------------------------
-# Resonate setup — local mode (in-memory, no server required)
+# Resonate setup — connect to local Resonate server
 # ---------------------------------------------------------------------------
 
-resonate = Resonate.local()
-resonate.register(process_payment)
+_RESONATE_URL = os.environ.get("RESONATE_URL", "http://localhost:8001")
 
 # Whether the demo should ask the workflow to simulate a payment-processor
 # crash on the first attempt. Set from CLI args at startup.
 SIMULATE_CRASH = "--crash" in sys.argv
 
+# Module-level reference; set inside the lifespan so it runs within the
+# running event loop (Resonate.__init__ spawns asyncio tasks).
+resonate: Resonate | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global resonate
+    resonate = Resonate(url=_RESONATE_URL)
+    resonate.register(process_payment)
+    yield
+    await resonate.stop()
+
+
 # ---------------------------------------------------------------------------
 # FastAPI webhook server
 # ---------------------------------------------------------------------------
 
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 
 @app.post("/webhook")
@@ -62,7 +77,7 @@ async def webhook(request: Request) -> dict[str, Any]:
 
     # Fire and forget — Stripe needs a fast 200 OK (within 5 seconds).
     # Processing happens durably in the background.
-    resonate.begin_run(
+    resonate.run(
         f"webhook/{event['event_id']}",
         process_payment,
         event,
@@ -74,17 +89,17 @@ async def webhook(request: Request) -> dict[str, Any]:
 
 
 @app.get("/status/{event_id}")
-def status(event_id: str) -> dict[str, Any]:
+async def status(event_id: str) -> dict[str, Any]:
     """Poll for processing result."""
     try:
-        handle = resonate.get(f"webhook/{event_id}")
+        handle = await resonate.get(f"webhook/{event_id}")
     except Exception as exc:  # pragma: no cover - not_found path
         raise HTTPException(status_code=404, detail="not_found") from exc
 
     if not handle.done():
         return {"status": "processing"}
 
-    return {"status": "done", "result": handle.result()}
+    return {"status": "done", "result": await handle.result()}
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +197,6 @@ def run_demo() -> None:
         )
 
     # Stop the server thread once the demo is finished.
-    import os
     os._exit(0)
 
 
